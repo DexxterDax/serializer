@@ -1,5 +1,5 @@
 {
-  "name": "@terradreamgames/serializer",
+  "name": "@terradreamgames/instance-serializer",
   "version": "1.0.0",
   "main": "out/init.lua",
   "scripts": {
