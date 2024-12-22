@@ -1,8 +1,7 @@
 {
-  "name": "@rbxts/serializer",
+  "name": "@terradreamgames/serializer",
   "version": "1.0.0",
-  "description": "A All-In-One Roblox instance and datatype serializer.",
-  "main": "src/init.lua",
+  "main": "out/init.lua",
   "scripts": {
     "build": "rbxtsc",
     "watch": "rbxtsc -w",
@@ -11,9 +10,10 @@
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "types": "src/index.d.ts",
+  "description": "",
+  "types": "out/index.d.ts",
   "files": [
-    "src",
+    "out",
     "!**/*.tsbuildinfo"
   ],
   "publishConfig": {
@@ -31,5 +31,8 @@
     "prettier": "^3.4.2",
     "roblox-ts": "^3.0.0",
     "typescript": "^5.7.2"
+  },
+  "dependencies": {
+    "@rbxts/services": "^1.5.5"
   }
 }
