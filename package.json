@@ -1,6 +1,6 @@
 {
   "name": "@terradreamgames/instance-serializer",
-  "version": "1.0.1",
+  "version": "1.0.4",
   "main": "out/init.lua",
   "scripts": {
     "build": "rbxtsc",
@@ -33,6 +33,7 @@
     "typescript": "^5.7.2"
   },
   "dependencies": {
+    "@rbxts/object-utils": "^1.0.4",
     "@rbxts/services": "^1.5.5"
   }
 }
