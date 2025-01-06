@@ -1,3 +1,4 @@
+import Object from "@rbxts/object-utils";
 import { HttpService, InsertService } from "@rbxts/services";
 
 interface APIClass {
@@ -61,6 +62,7 @@ class InstanceSerializer {
 		"TimeLength",
 		"PlaybackLoudness",
 		"Active",
+		"MeshId",
 	]);
 
 	/**
@@ -181,57 +183,100 @@ class InstanceSerializer {
 	 * @returns {Promise<Instance>} The reconstructed instance
 	 */
 	public static async deserializeInstance(data: SerializedInstance): Promise<Instance> {
-		let instance: Instance;
+		// Handle non-mesh instances first
+		if (data.ClassName !== "MeshPart") {
+			let instance: Instance;
+			let propertiesSet = false;
 
-		if (data.ClassName === "Attachment") {
-			instance = new Instance("Attachment");
+			// Create instance based on type
+			if (data.ClassName === "Attachment") {
+				instance = new Instance("Attachment");
+				instance.Name = data.Name;
+
+				for (const [propertyName, propertyValue] of pairs(data.Properties)) {
+					const [success, err] = pcall(() => {
+						instance[propertyName as never] = this.deserializeProperty(propertyValue) as never;
+					});
+					if (!success) {
+						warn(`Failed to set Attachment property ${propertyName} on ${instance.Name}: ${err}`);
+					}
+					propertiesSet = true;
+				}
+			} else {
+				instance = new Instance(data.ClassName as keyof CreatableInstances);
+			}
+
 			instance.Name = data.Name;
 
-			// Set attachment properties
-			for (const [propertyName, propertyValue] of pairs(data.Properties)) {
+			// Initialize propertyPromises array
+			const propertyPromises: Promise<void>[] = [];
+
+			// Only set properties if they haven't been set yet
+			if (!propertiesSet) {
+				const PROP_BATCH_SIZE = 50;
+				const properties = Object.entries(data.Properties);
+
+				for (const i of $range(0, properties.size() - 1, PROP_BATCH_SIZE)) {
+					propertyPromises.push(
+						new Promise<void>((resolve) => {
+							for (const j of $range(i, math.min(i + PROP_BATCH_SIZE - 1, properties.size() - 1))) {
+								const [key, value] = properties[j];
+								if (this.READ_ONLY_PROPERTIES.has(key as string)) continue;
+								const [success, err] = pcall(() => {
+									instance[key as never] = this.deserializeProperty(value) as never;
+								});
+								if (!success) {
+									warn(`Failed to set property ${key} on ${instance.Name}: ${err}`);
+								}
+							}
+							resolve();
+						}),
+					);
+				}
+				await Promise.all(propertyPromises);
+			}
+
+			// Process children recursively
+			const childPromises: Promise<Instance>[] = data.Children.map(async (childData) => {
+				const child = await this.deserializeInstance(childData);
+				child.Parent = instance;
+				return child;
+			});
+
+			await Promise.all([...propertyPromises, ...childPromises]);
+			return instance;
+		}
+
+		// Handle MeshPart separately
+		if (data.MeshId) {
+			const meshPart = InsertService.CreateMeshPartAsync(
+				data.MeshId,
+				Enum.CollisionFidelity.Default,
+				Enum.RenderFidelity.Automatic,
+			);
+
+			meshPart.Name = data.Name;
+
+			// Set properties for MeshPart
+			for (const [key, value] of pairs(data.Properties)) {
+				if (this.READ_ONLY_PROPERTIES.has(key as string)) continue;
 				try {
-					instance[propertyName as never] = this.deserializeProperty(propertyValue) as never;
+					meshPart[key as never] = this.deserializeProperty(value) as never;
 				} catch (err) {
-					warn(`Failed to set Attachment property ${propertyName} on ${instance.Name}: ${err}`);
+					warn(`Failed to set MeshPart property ${key} on ${data.Name}: ${err}`);
 				}
 			}
-		} else if (data.ClassName === "MeshPart" && data.MeshId) {
-			try {
-				instance = InsertService.CreateMeshPartAsync(
-					data.MeshId,
-					Enum.CollisionFidelity.Default,
-					Enum.RenderFidelity.Automatic,
-				);
-				instance.Name = data.Name;
-			} catch (err) {
-				warn(`Failed to create MeshPart: ${err}`);
-				// Fallback to regular instance creation
-				instance = new Instance(data.ClassName as keyof CreatableInstances);
-				instance.Name = data.Name;
+
+			// Process children for MeshPart
+			for (const childData of data.Children) {
+				const child = await this.deserializeInstance(childData);
+				child.Parent = meshPart;
 			}
-		} else {
-			// Regular instance creation
-			instance = new Instance(data.ClassName as keyof CreatableInstances);
-			instance.Name = data.Name;
+
+			return meshPart;
 		}
 
-		// Set properties
-		for (const [propertyName, propertyValue] of pairs(data.Properties)) {
-			if (instance.IsA("MeshPart") && propertyName === "MeshId") continue; // Skip MeshId for MeshParts
-			try {
-				instance[propertyName as never] = this.deserializeProperty(propertyValue) as never;
-			} catch (err) {
-				warn(`Failed to set property ${propertyName} on ${instance.Name}: ${err}`);
-			}
-		}
-
-		// Create children
-		for (const childData of data.Children) {
-			const child = await this.deserializeInstance(childData);
-			child.Parent = instance;
-		}
-
-		return instance;
+		throw "Invalid MeshPart data: Missing MeshId";
 	}
 
 	/**
@@ -373,6 +418,7 @@ class InstanceSerializer {
 		if (typeIs(value, "table") && (value as { _type?: string })._type !== undefined) {
 			const typedValue = value as { _type: string; [key: string]: unknown };
 
+			// Fast path for common types
 			switch (typedValue._type) {
 				case "Vector3":
 					return new Vector3(typedValue.X as number, typedValue.Y as number, typedValue.Z as number);
@@ -393,8 +439,6 @@ class InstanceSerializer {
 						rotation[7],
 						rotation[8],
 					);
-				case "Color3":
-					return new Color3(typedValue.R as number, typedValue.G as number, typedValue.B as number);
 				case "NumberSequence":
 					return new NumberSequence(
 						(typedValue.Keypoints as Array<{ Time: number; Value: number; Envelope: number }>).map(
@@ -407,17 +451,19 @@ class InstanceSerializer {
 							typedValue.Keypoints as Array<{ Time: number; Value: { R: number; G: number; B: number } }>
 						).map((k) => new ColorSequenceKeypoint(k.Time, new Color3(k.Value.R, k.Value.G, k.Value.B))),
 					);
-				case "EnumItem":
+				case "Color3":
+					return new Color3(typedValue.R as number, typedValue.G as number, typedValue.B as number);
+				case "EnumItem": {
 					const enumType = typedValue.EnumType as string;
 					const enumName = typedValue.Name as string;
 					return (Enum as unknown as { [key: string]: { [key: string]: unknown } })[enumType][enumName];
+				}
 				case "Vector2":
 					return new Vector2(typedValue.X as number, typedValue.Y as number);
 				case "NumberRange":
 					return new NumberRange(typedValue.Min as number, typedValue.Max as number);
 			}
 		}
-
 		return value;
 	}
 
